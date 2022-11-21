@@ -33,6 +33,7 @@ func (h *handler) InitRoutes() *gin.Engine {
 		dRouter.GET("/:type_id", h.GetDiseases)
 		dRouter.POST("/:type_id", h.AddDisease)
 		dRouter.DELETE("/:disease_code", h.DeleteDisease)
+		dRouter.PUT("/:disease_code", h.UpdateDisease)
 	}
 
 	return router

@@ -24,6 +24,7 @@ type Repository interface {
 	GetTypes() ([]*models.GetDiseaseTypesResponse, error)
 	GetDiseases(types int64) ([]*models.GetDiseasesResponse, error)
 	AddDisease(*models.AddDiseaseRequest) error
+	DeleteDisease(diseaseCode string) error
 }
 
 func NewRepository(db *pgxpool.Pool, log *zap.SugaredLogger) Repository {
@@ -92,7 +93,98 @@ func (r *repository) GetDiseases(types int64) ([]*models.GetDiseasesResponse, er
 	}
 	return responses, err
 }
+
 func (r *repository) AddDisease(req *models.AddDiseaseRequest) error {
+	timeout := r.timeout
+	var population int
+	var id int64
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	query := `SELECT population FROM Country WHERE cname=$1`
+
+	err := r.db.QueryRow(ctx, query, req.Cname).Scan(&population)
+	if err != nil {
+		r.log.Errorf("error occured %v", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return models.ErrCountryNotFound
+		}
+		return err
+	}
+
+	query = `SELECT id FROM Disease WHERE disease_code=$1`
+	err = r.db.QueryRow(ctx, query, req.DiseaseCode).Scan(&id)
+	if err == nil {
+		r.log.Errorf("disease exists")
+		return models.ErrDiseaseExists
+	}
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			r.log.Errorf("error occured while adding disease: %v", err)
+			return err
+		}
+	}
+
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{
+		DeferrableMode: pgx.NotDeferrable,
+	})
+	if err != nil {
+		r.log.Errorf("could not init tx %v", err)
+		return err
+	}
+
+	query = `INSERT INTO
+				Disease (disease_code, pathogen, description, id)
+ 			  VALUES
+				($1,$2,$3,$4) RETURNING disease_code;`
+	err = r.db.QueryRow(ctx, query, req.DiseaseCode, req.Pathogen, req.Description, req.ID).Scan(&req.DiseaseCode)
+	if err != nil {
+		tx.Rollback(ctx)
+		r.log.Errorf("Error occured while adding disease %v", err)
+		return err
+	}
+
+	layout := "2006-01-02"
+	incDate, _ := time.Parse(layout, req.FirstIncDate)
+
+	query = `INSERT INTO
+				discover (cname, disease_code, first_enc_date)
+  			VALUES
+				($1, $2, $3)`
+
+	_, err = r.db.Exec(ctx, query, req.Cname, req.DiseaseCode, incDate)
+	if err != nil {
+		tx.Rollback(ctx)
+		r.log.Errorf("Error occured while adding discover: %v", err)
+		return err
+	}
+	err = tx.Commit(ctx)
+	if err != nil {
+		errTX := tx.Rollback(ctx)
+		if errTX != nil {
+			log.Printf("ERROR: transaction error: %s", errTX)
+		}
+		return fmt.Errorf("error occurred while adding new disease: %v", err)
+	}
+	return nil
+}
+
+func (r *repository) DeleteDisease(diseaseCode string) error {
+	timeout := r.timeout
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	query := "DELETE FROM Disease WHERE disease_code=$1"
+	n, err := r.db.Exec(ctx, query, diseaseCode)
+	if err != nil {
+		return err
+	}
+	if n.RowsAffected() == 0 {
+		return fmt.Errorf("disease not found")
+	}
+	return nil
+}
+
+func (r *repository) UpdateDisease(req models.AddDiseaseRequest) error {
 	timeout := r.timeout
 	var population int
 	var id int64
@@ -133,10 +225,9 @@ func (r *repository) AddDisease(req *models.AddDiseaseRequest) error {
 		return err
 	}
 
-	query = `INSERT INTO
-				Disease (disease_code, pathogen, description, id)
- 			  VALUES
-				($1,$2,$3,$4) RETURNING disease_code;`
+	query = `UPDATE
+				Disease SET pathogen = $2, description = $3, id = $4 WHERE  disease_code = $1,
+			RETURNING disease_code;`
 	err = r.db.QueryRow(ctx, query, req.DiseaseCode, req.Pathogen, req.Description, req.ID).Scan(&req.DiseaseCode)
 	if err != nil {
 		tx.Rollback(ctx)
@@ -147,10 +238,8 @@ func (r *repository) AddDisease(req *models.AddDiseaseRequest) error {
 	layout := "2006-01-02"
 	incDate, _ := time.Parse(layout, req.FirstIncDate)
 
-	query = `INSERT INTO
-				discover (cname, disease_code, first_enc_date)
-  			VALUES
-				($1, $2, $3)`
+	query = `UPDATE 
+				discover SET disease_code = $2, first_enc_date = $3 WHERE cname = $1`
 
 	_, err = r.db.Exec(ctx, query, req.Cname, req.DiseaseCode, incDate)
 	if err != nil {

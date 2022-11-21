@@ -69,19 +69,29 @@ func (h *handler) AddDisease(c *gin.Context) {
 func (h *handler) GetTypes(c *gin.Context) {
 	res, err := h.repo.GetTypes()
 	if err != nil {
-		c.AbortWithStatusJSON(400, sendResponse(-1, nil, err))
+		c.AbortWithStatusJSON(400, sendResponse(-1, nil, models.ErrInternalServer))
 		return
 	}
 	c.JSON(200, sendResponse(0, res, nil))
 }
 func (h *handler) DeleteDisease(c *gin.Context) {
-	res, err := h.repo.GetTypes()
-	if err != nil {
-		c.AbortWithStatusJSON(400, sendResponse(-1, nil, err))
+	dCode := c.Param("disease_code")
+	if dCode == "" {
+		c.AbortWithStatusJSON(400, sendResponse(-1, nil, models.ErrInvalidInput))
 		return
 	}
-	c.JSON(200, sendResponse(0, res, nil))
+	err := h.repo.DeleteDisease(dCode)
+	if err != nil {
+		c.AbortWithStatusJSON(400, sendResponse(-1, nil, models.ErrInternalServer))
+		return
+	}
+	c.JSON(200, sendResponse(0, 0, nil))
 }
+
+func (h *handler) UpdateDisease(c *gin.Context) {
+
+}
+
 func sendResponse(status int, data interface{}, err error) gin.H {
 	var errResponse gin.H
 	if err != nil {
